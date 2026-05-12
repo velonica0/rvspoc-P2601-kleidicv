@@ -8,40 +8,24 @@
 - **Cores:** 8
 - **OS:** openKylin (Linux 6.18.3+)
 - **Compiler:** GCC 15.2.0 (Bianbu)
-- **SSH:** `ssh openkylin@192.168.5.211` (password: `openkylin`)
-- **Working directory:** `/home/openkylin/github/rvspoc-P2601-kleidicv`
 
 ## Build
 
 ### Prerequisites
 
-GoogleTest 1.12.1 must be available locally (the target has no internet). Download on a connected machine and extract to `/tmp/gtest` on the target:
+GoogleTest 1.12.1 must be available locally. If no internet access, download on a connected machine and extract:
 
 ```bash
-# On a machine with internet:
-wget https://github.com/google/googletest/archive/refs/tags/release-1.12.1.tar.gz
-scp release-1.12.1.tar.gz openkylin@192.168.5.211:/tmp/
-
-# On the target:
-cd /tmp && tar xzf release-1.12.1.tar.gz && mv googletest-release-1.12.1 gtest
-cd gtest && patch --strip=1 --input=/home/openkylin/github/rvspoc-P2601-kleidicv/test/patches/googletest.patch
+tar xzf googletest-release-1.12.1.tar.gz
+mv googletest-release-1.12.1 /tmp/gtest
+cd /tmp/gtest
+patch --strip=1 --input=/path/to/rvspoc-P2601-kleidicv/test/patches/googletest.patch
 ```
 
-### Sync Code
-
-From the development machine:
+### Configure and Build (RVV)
 
 ```bash
-rsync -az --exclude='.git' --exclude='build' \
-  /path/to/rvspoc-P2601-kleidicv/ \
-  openkylin@192.168.5.211:/home/openkylin/github/rvspoc-P2601-kleidicv/
-```
-
-### Configure and Build
-
-```bash
-ssh openkylin@192.168.5.211
-cd /home/openkylin/github/rvspoc-P2601-kleidicv
+cd /path/to/rvspoc-P2601-kleidicv
 mkdir -p build && cd build
 
 cmake .. \
@@ -49,10 +33,32 @@ cmake .. \
   -DKLEIDICV_BENCHMARK=OFF \
   -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/tmp/gtest
 
-make kleidicv-api-test -j8
+make kleidicv-api-test -j$(nproc)
 ```
 
-**Build notes:**
+### Configure and Build (Scalar fallback)
+
+To build the scalar-only version (no RVV intrinsics, uses `#else` fallback in all `_rvv.cpp` files):
+
+```bash
+cd /path/to/rvspoc-P2601-kleidicv
+
+# Change rv64gcv -> rv64gc in CMakeLists.txt line 201
+sed -i 's/-march=rv64gcv/-march=rv64gc/' kleidicv/CMakeLists.txt
+
+mkdir -p build_scalar && cd build_scalar
+cmake .. \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DKLEIDICV_BENCHMARK=OFF \
+  -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/tmp/gtest
+make kleidicv-api-test -j$(nproc)
+
+# Restore CMakeLists.txt
+sed -i 's/-march=rv64gc/-march=rv64gcv/' ../kleidicv/CMakeLists.txt
+```
+
+### Build Notes
+
 - The C example (`kleidicv-c-example`) may fail to link due to `-fPIC` issues. This is pre-existing and unrelated to RVV work. Use `make kleidicv-api-test` to build only the test binary.
 - The `kleidicv_rvv` target compiles with `-march=rv64gcv -DKLEIDICV_TARGET_NEON=1 -fno-builtin-malloc -fno-builtin-free`.
 - The `-fno-builtin-malloc` flag is required because GCC 15 at `-O2` eliminates `malloc()+free()` as a dead store, which breaks the test framework's `MockMallocToFail` mechanism.
@@ -112,6 +118,57 @@ for suite in $(./test/api/kleidicv-api-test --gtest_list_tests | grep -E "^[A-Z]
 done
 ```
 
+### Verify both RVV and scalar paths
+
+Both builds should produce identical test results:
+
+```bash
+# RVV build
+cd build && ./test/api/kleidicv-api-test --gtest_brief=1 | tail -3
+
+# Scalar build
+cd ../build_scalar && ./test/api/kleidicv-api-test --gtest_brief=1 | tail -3
+```
+
+Expected: both show `4526 passed, 0 failed, 17 skipped`.
+
+## Benchmark
+
+Performance comparison between RVV and scalar builds uses `scripts/bench.cpp`.
+
+### Run
+
+```bash
+cd /path/to/rvspoc-P2601-kleidicv
+bash scripts/run_bench.sh
+```
+
+Or manually:
+
+```bash
+# RVV
+c++ -O2 -std=c++17 -Wno-unused-result \
+    -Ikleidicv/include -Ibuild/kleidicv/include \
+    -o /tmp/bench_rvv scripts/bench.cpp -Lbuild/kleidicv -lkleidicv
+/tmp/bench_rvv
+
+# Scalar
+c++ -O2 -std=c++17 -march=rv64gc -Wno-unused-result \
+    -Ikleidicv/include -Ibuild_scalar/kleidicv/include \
+    -o /tmp/bench_scalar scripts/bench.cpp -Lbuild_scalar/kleidicv -lkleidicv
+/tmp/bench_scalar
+```
+
+### Verify that RVV instructions are present
+
+```bash
+# RVV build: should be >0
+objdump -d build/kleidicv/libkleidicv.a | grep -c 'vsetvli'
+
+# Scalar build: should be 0
+objdump -d build_scalar/kleidicv/libkleidicv.a | grep -c 'vsetvli'
+```
+
 ## Test Coverage
 
 ### Test suites by operator category
@@ -140,110 +197,6 @@ done
 - **Image size limits:** Oversized images verify `KLEIDICV_ERROR_RANGE`.
 - **Threading:** Multi-threaded dispatch correctness verified against single-threaded reference.
 - **In-place operation:** Verifying src==dst works correctly where supported.
-
-## Verify RVV is Used (Not Scalar Fallback)
-
-The test binary tests through the public C API which is backend-agnostic — the output doesn't show whether the RVV or scalar path ran. Both paths produce identical results by design. Three methods to verify:
-
-### Method 1: Check binary for vector instructions
-
-```bash
-cd build
-objdump -d kleidicv/libkleidicv.a | grep -c 'vsetvli\b'
-```
-
-If the count is >0, vector instructions are compiled in. For a specific operator:
-
-```bash
-objdump -d kleidicv/CMakeFiles/kleidicv_rvv.dir/src/arithmetics/add_rvv.cpp.o | grep -E 'vsetvli|vle8|vse8|vsadd'
-```
-
-### Method 2: Performance comparison
-
-The definitive proof. Compare the same function via scalar C loop vs the RVV-compiled library:
-
-```bash
-cat > /tmp/bench.cpp << 'EOF'
-#include <cstdio>
-#include <cstdint>
-#include <cstring>
-#include <chrono>
-#include <riscv_vector.h>
-
-void add_scalar(const uint8_t *a, const uint8_t *b, uint8_t *c, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        int s = a[i] + b[i]; c[i] = s > 255 ? 255 : s;
-    }
-}
-void add_rvv(const uint8_t *a, const uint8_t *b, uint8_t *c, size_t n) {
-    size_t i = 0;
-    while (i < n) {
-        size_t vl = __riscv_vsetvl_e8m1(n - i);
-        vuint8m1_t va = __riscv_vle8_v_u8m1(a + i, vl);
-        vuint8m1_t vb = __riscv_vle8_v_u8m1(b + i, vl);
-        __riscv_vse8_v_u8m1(c + i, __riscv_vsaddu_vv_u8m1(va, vb, vl), vl);
-        i += vl;
-    }
-}
-int main() {
-    const size_t N = 1920 * 1080;
-    uint8_t *a = new uint8_t[N], *b = new uint8_t[N], *c = new uint8_t[N];
-    memset(a, 100, N); memset(b, 50, N);
-    const int IT = 200;
-    add_scalar(a, b, c, N);
-    auto t0 = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < IT; i++) add_scalar(a, b, c, N);
-    auto t1 = std::chrono::high_resolution_clock::now();
-    double ms_s = std::chrono::duration<double, std::milli>(t1 - t0).count() / IT;
-    add_rvv(a, b, c, N);
-    t0 = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < IT; i++) add_rvv(a, b, c, N);
-    t1 = std::chrono::high_resolution_clock::now();
-    double ms_r = std::chrono::duration<double, std::milli>(t1 - t0).count() / IT;
-    printf("Scalar: %.2f ms  RVV: %.2f ms  Speedup: %.1fx\n", ms_s, ms_r, ms_s / ms_r);
-    delete[] a; delete[] b; delete[] c;
-}
-EOF
-c++ -O2 -std=c++17 -march=rv64gcv -o /tmp/bench /tmp/bench.cpp && /tmp/bench
-```
-
-### Method 3: Build both RVV and scalar libraries, benchmark the same API
-
-This is the definitive method. Build the library twice with different `-march`, then benchmark both against the same API:
-
-```bash
-cd /home/openkylin/github/rvspoc-P2601-kleidicv
-
-# RVV build (default)
-cd build
-# already built with -march=rv64gcv
-
-# Scalar build: change rv64gcv -> rv64gc in CMakeLists.txt line 201
-cd ../build_scalar
-sed -i 's/-march=rv64gcv/-march=rv64gc/' ../kleidicv/CMakeLists.txt
-cmake .. -DCMAKE_BUILD_TYPE=Release ...
-make kleidicv -j8
-sed -i 's/-march=rv64gc/-march=rv64gcv/' ../kleidicv/CMakeLists.txt  # restore
-
-# Verify: 0 vector instructions in scalar, >0 in RVV
-objdump -d build/kleidicv/libkleidicv.a | grep -c 'vsetvli'        # 587
-objdump -d build_scalar/kleidicv/libkleidicv.a | grep -c 'vsetvli'  # 0
-
-# Run same benchmark against both:
-c++ -O2 -I... -o bench_rvv bench.cpp -Lbuild/kleidicv -lkleidicv
-c++ -O2 -I... -o bench_scalar bench.cpp -Lbuild_scalar/kleidicv -lkleidicv
-```
-
-Measured on Spacemit X100 (VLEN=256), 1920x1080, 200 iterations:
-
-| Operation | Scalar (ms) | RVV (ms) | Speedup |
-|-----------|------------|---------|---------|
-| saturating_add_u8 | 3.085 | 0.473 | 6.5x |
-| saturating_sub_u8 | 2.847 | 0.448 | 6.4x |
-| min_max_u8 | 3.838 | 0.148 | 25.9x |
-| gray_to_rgb_u8 | 2.849 | 0.421 | 6.8x |
-
-Both builds pass the full test suite identically (4526 passed, 0 failed).
 
 ## Verify VLEN
 
