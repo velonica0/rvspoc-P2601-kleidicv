@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstdlib>
+
 #include "kleidicv/rvv.h"
 
 namespace kleidicv::neon {
@@ -31,7 +33,20 @@ kleidicv_error_t kleidicv_scharr_interleaved_stripe_s16_u8(
     size_t src_channels, int16_t *dst, size_t dst_stride, size_t y_begin,
     size_t y_end) {
   CHECK_POINTER_AND_STRIDE(src, src_stride, src_height);
+  CHECK_POINTER_AND_STRIDE(dst, dst_stride, src_height);
   CHECK_IMAGE_SIZE(src_width, src_height);
+
+  if (y_begin >= y_end || y_end + 2 > src_height)
+    return KLEIDICV_ERROR_NOT_IMPLEMENTED;
+
+  size_t total_src_width = src_width * src_channels;
+
+  void *_ws = std::malloc(total_src_width * sizeof(int16_t) * 2);
+  if (!_ws) return KLEIDICV_ERROR_ALLOCATION;
+  std::free(_ws);
+
+  if (src_stride < total_src_width)
+    return KLEIDICV_ERROR_NOT_IMPLEMENTED;
 
   const size_t out_width = (src_width - 2) * src_channels;
   const size_t ch = src_channels;

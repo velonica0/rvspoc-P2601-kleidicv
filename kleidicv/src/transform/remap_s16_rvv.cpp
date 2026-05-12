@@ -33,28 +33,25 @@ kleidicv_error_t remap_s16(const T *src, size_t src_stride, size_t src_width,
   }
 
   size_t src_elem_stride = src_stride / sizeof(T);
+  const int sw = static_cast<int>(src_width);
+  const int sh = static_cast<int>(src_height);
 
   for (size_t y = 0; y < dst_height; ++y) {
     const int16_t *map_row = row_ptr(mapxy, mapxy_stride, y);
     T *dst_row = row_ptr(dst, dst_stride, y);
 
     for (size_t x = 0; x < dst_width; ++x) {
-      int16_t mx = map_row[x * 2];
-      int16_t my = map_row[x * 2 + 1];
+      int mx = static_cast<int>(map_row[x * 2]);
+      int my = static_cast<int>(map_row[x * 2 + 1]);
 
       if (border_type == KLEIDICV_BORDER_TYPE_REPLICATE) {
-        mx = static_cast<int16_t>(
-            std::clamp(static_cast<int>(mx), 0,
-                       static_cast<int>(src_width) - 1));
-        my = static_cast<int16_t>(
-            std::clamp(static_cast<int>(my), 0,
-                       static_cast<int>(src_height) - 1));
+        mx = std::clamp(mx, 0, sw - 1);
+        my = std::clamp(my, 0, sh - 1);
         dst_row[x] = src[static_cast<size_t>(my) * src_elem_stride +
                          static_cast<size_t>(mx)];
       } else {
         // Constant border
-        if (mx < 0 || mx >= static_cast<int16_t>(src_width) || my < 0 ||
-            my >= static_cast<int16_t>(src_height)) {
+        if (mx < 0 || mx >= sw || my < 0 || my >= sh) {
           dst_row[x] = *border_value;
         } else {
           dst_row[x] = src[static_cast<size_t>(my) * src_elem_stride +

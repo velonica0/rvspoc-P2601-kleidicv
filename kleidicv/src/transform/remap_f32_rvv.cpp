@@ -4,12 +4,24 @@
 
 #include <algorithm>
 #include <cassert>
+#include <climits>
 #include <cmath>
+#include <limits>
 
+#include "kleidicv/kleidicv.h"
 #include "kleidicv/rvv.h"
 #include "kleidicv/transform/remap.h"
 
 namespace kleidicv::neon {
+
+// Safely convert a float coordinate to int, clamping to [INT_MIN, INT_MAX]
+// to avoid undefined behaviour from out-of-range float-to-int casts.
+// Any value outside the source image bounds hits the border path in get_pixel.
+static inline int safe_float_to_int(float v) {
+  double d = static_cast<double>(v);
+  d = std::max(static_cast<double>(INT_MIN), std::min(d, static_cast<double>(INT_MAX)));
+  return static_cast<int>(d);
+}
 
 // Scalar fallback for remap_f32.
 template <typename T>
@@ -61,27 +73,33 @@ kleidicv_error_t remap_f32(const T *src, size_t src_stride, size_t src_width,
       float fy = my[x];
 
       if (interpolation == KLEIDICV_INTERPOLATION_NEAREST) {
-        int ix = static_cast<int>(std::round(fx));
-        int iy = static_cast<int>(std::round(fy));
+        // Match Neon's vcvtaq: round to nearest, ties away from zero.
+        // Clamp before casting to avoid UB on out-of-range floats.
+        int ix = safe_float_to_int(std::round(fx));
+        int iy = safe_float_to_int(std::round(fy));
         for (size_t ch = 0; ch < channels; ++ch) {
           dst_row[x * channels + ch] = get_pixel(ix, iy, ch);
         }
       } else {
         // Bilinear
-        int ix = static_cast<int>(std::floor(fx));
-        int iy = static_cast<int>(std::floor(fy));
-        float xfrac = fx - static_cast<float>(ix);
-        float yfrac = fy - static_cast<float>(iy);
+        // Clamp before casting to avoid UB on out-of-range floats.
+        float fx_floor = std::floor(fx);
+        float fy_floor = std::floor(fy);
+        int ix = safe_float_to_int(fx_floor);
+        int iy = safe_float_to_int(fy_floor);
+        float xfrac = fx - fx_floor;
+        float yfrac = fy - fy_floor;
         for (size_t ch = 0; ch < channels; ++ch) {
           float a = static_cast<float>(get_pixel(ix, iy, ch));
           float b = static_cast<float>(get_pixel(ix + 1, iy, ch));
           float c = static_cast<float>(get_pixel(ix, iy + 1, ch));
           float d = static_cast<float>(get_pixel(ix + 1, iy + 1, ch));
-          float val = a * (1 - xfrac) * (1 - yfrac) +
-                      b * xfrac * (1 - yfrac) + c * (1 - xfrac) * yfrac +
-                      d * xfrac * yfrac;
+          // Match the reference: line-by-line bilinear, then lround.
+          float line1 = (b - a) * xfrac + a;
+          float line2 = (d - c) * xfrac + c;
+          float val = (line2 - line1) * yfrac + line1;
           dst_row[x * channels + ch] =
-              static_cast<T>(std::clamp(val + 0.5f, 0.0f, 255.0f));
+              static_cast<T>(std::lround(val));
         }
       }
     }

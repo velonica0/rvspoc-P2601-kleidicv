@@ -51,8 +51,14 @@ kleidicv_error_t separable_filter_2d_stripe(
   Rows<T> dst_rows{dst, dst_stride, channels};
 
   // Intermediate buffer for vertical pass: one row at a time, width * channels.
+  // Use std::malloc (not std::vector/operator new) so that the test's
+  // MockMallocToFail infrastructure can intercept allocation failures.
   const size_t row_elems = width * channels;
-  std::vector<WiderT> vbuf(row_elems);
+  WiderT *vbuf = static_cast<WiderT *>(
+      std::malloc(row_elems * sizeof(WiderT)));
+  if (!vbuf) {
+    return KLEIDICV_ERROR_ALLOCATION;
+  }
 
   for (size_t y = y_begin; y < y_end; ++y) {
     // --- Vertical pass: apply kernel_y along the column direction ---
@@ -88,7 +94,7 @@ kleidicv_error_t separable_filter_2d_stripe(
         // Saturate-narrow u32 -> u16 and store to vbuf.
         vuint16m2_t result =
             __riscv_vnclipu_wx_u16m2(acc, 0, __RISCV_VXRM_RDN, vl);
-        __riscv_vse16_v_u16m2(vbuf.data() + pos, result, vl);
+        __riscv_vse16_v_u16m2(vbuf + pos, result, vl);
         pos += vl;
       }
     } else if constexpr (std::is_same<T, uint16_t>::value) {
@@ -109,7 +115,7 @@ kleidicv_error_t separable_filter_2d_stripe(
         // Saturate-narrow u64 -> u32 and store to vbuf.
         vuint32m2_t result =
             __riscv_vnclipu_wx_u32m2(acc, 0, __RISCV_VXRM_RDN, vl);
-        __riscv_vse32_v_u32m2(vbuf.data() + pos, result, vl);
+        __riscv_vse32_v_u32m2(vbuf + pos, result, vl);
         pos += vl;
       }
     }
@@ -174,6 +180,7 @@ kleidicv_error_t separable_filter_2d_stripe(
     }
   }
 
+  std::free(vbuf);
   return KLEIDICV_OK;
 }
 

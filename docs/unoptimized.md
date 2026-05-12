@@ -94,6 +94,8 @@ Operators that currently use scalar fallback on RISC-V and could benefit from RV
 
 ## On-Device Test Results (Spacemit X100, VLEN=256)
 
-930 / 930 tests passed (100%) including long-running exhaustive exp test.
+Full unfiltered test suite: 4543 total, 4526 passed, 0 failed, 17 skipped, 0 crashed.
+
+The 17 skipped tests are intentionally long-running (pass with `--long-running-tests`).
 
 All code is VLEN-agnostic — the same binary works on VLEN=128, 256, and 512.

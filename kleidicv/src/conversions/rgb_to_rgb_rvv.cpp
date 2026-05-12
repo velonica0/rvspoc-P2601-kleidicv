@@ -213,9 +213,10 @@ kleidicv_error_t rgb_to_bgr_u8(const uint8_t *src, size_t src_stride,
     uint8_t *d = reinterpret_cast<uint8_t *>(
         reinterpret_cast<uint8_t *>(dst) + y * dst_stride);
     for (size_t x = 0; x < width; ++x) {
-      d[x * 3 + 0] = s[x * 3 + 2];
-      d[x * 3 + 1] = s[x * 3 + 1];
-      d[x * 3 + 2] = s[x * 3 + 0];
+      uint8_t r = s[x * 3 + 0], g = s[x * 3 + 1], b = s[x * 3 + 2];
+      d[x * 3 + 0] = b;
+      d[x * 3 + 1] = g;
+      d[x * 3 + 2] = r;
     }
   }
   return KLEIDICV_OK;
@@ -235,10 +236,12 @@ kleidicv_error_t rgba_to_bgra_u8(const uint8_t *src, size_t src_stride,
     uint8_t *d = reinterpret_cast<uint8_t *>(
         reinterpret_cast<uint8_t *>(dst) + y * dst_stride);
     for (size_t x = 0; x < width; ++x) {
-      d[x * 4 + 0] = s[x * 4 + 2];
-      d[x * 4 + 1] = s[x * 4 + 1];
-      d[x * 4 + 2] = s[x * 4 + 0];
-      d[x * 4 + 3] = s[x * 4 + 3];
+      uint8_t r = s[x * 4 + 0], g = s[x * 4 + 1];
+      uint8_t b = s[x * 4 + 2], a = s[x * 4 + 3];
+      d[x * 4 + 0] = b;
+      d[x * 4 + 1] = g;
+      d[x * 4 + 2] = r;
+      d[x * 4 + 3] = a;
     }
   }
   return KLEIDICV_OK;

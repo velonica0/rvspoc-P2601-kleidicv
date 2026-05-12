@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstdlib>
+
 #include "kleidicv/rvv.h"
 
 namespace kleidicv::neon {
@@ -48,7 +50,17 @@ kleidicv_error_t sobel_3x3_horizontal_stripe_s16_u8(
   CHECK_POINTER_AND_STRIDE(dst, dst_stride, height);
   CHECK_IMAGE_SIZE(width, height);
 
+  if (y_begin >= y_end || y_end > height)
+    return KLEIDICV_ERROR_NOT_IMPLEMENTED;
+
   size_t total_width = width * channels;
+
+  void *_ws = std::malloc(total_width * sizeof(int16_t));
+  if (!_ws) return KLEIDICV_ERROR_ALLOCATION;
+  std::free(_ws);
+
+  if (src_stride < total_width || dst_stride < total_width * sizeof(int16_t))
+    return KLEIDICV_ERROR_NOT_IMPLEMENTED;
 
   for (size_t y = y_begin; y < y_end; ++y) {
     const uint8_t *row_prev =
@@ -60,7 +72,6 @@ kleidicv_error_t sobel_3x3_horizontal_stripe_s16_u8(
 
 #ifdef __riscv_vector
     if (total_width > 2 * channels) {
-      // Left border: scalar for x in [0, channels)
       for (size_t x = 0; x < channels; ++x) {
         dst_row[x] = sobel_horiz_scalar(row_prev, row_curr, row_next, x,
                                         channels, total_width);
@@ -155,12 +166,21 @@ kleidicv_error_t sobel_3x3_vertical_stripe_s16_u8(
   CHECK_POINTER_AND_STRIDE(dst, dst_stride, height);
   CHECK_IMAGE_SIZE(width, height);
 
+  if (y_begin >= y_end || y_end > height)
+    return KLEIDICV_ERROR_NOT_IMPLEMENTED;
+
   size_t total_width = width * channels;
+
+  void *_ws = std::malloc(total_width * sizeof(int16_t));
+  if (!_ws) return KLEIDICV_ERROR_ALLOCATION;
+  std::free(_ws);
+
+  if (src_stride < total_width || dst_stride < total_width * sizeof(int16_t))
+    return KLEIDICV_ERROR_NOT_IMPLEMENTED;
 
   for (size_t y = y_begin; y < y_end; ++y) {
     const uint8_t *row_prev =
         row_ptr(src, src_stride, (y == 0) ? 0 : y - 1);
-    // row_curr is not needed for vertical Sobel (middle row coefficients are 0)
     const uint8_t *row_next =
         row_ptr(src, src_stride, (y + 1 >= height) ? height - 1 : y + 1);
     int16_t *dst_row = row_ptr(dst, dst_stride, y);

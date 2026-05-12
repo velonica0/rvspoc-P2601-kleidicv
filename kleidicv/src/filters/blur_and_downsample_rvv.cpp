@@ -40,7 +40,13 @@ kleidicv_error_t kleidicv_blur_and_downsample_stripe_u8(
   const size_t total_src_cols = src_width * channels;
 
   // Intermediate buffer for vertical pass: one row of uint16_t.
-  std::vector<uint16_t> vbuf(total_src_cols);
+  // Use std::malloc (not std::vector/operator new) so that the test's
+  // MockMallocToFail infrastructure can intercept allocation failures.
+  uint16_t *vbuf = static_cast<uint16_t *>(
+      std::malloc(total_src_cols * sizeof(uint16_t)));
+  if (!vbuf) {
+    return KLEIDICV_ERROR_ALLOCATION;
+  }
 
   // Vertical kernel weights: [1, 4, 6, 4, 1].
   static constexpr int vk[5] = {1, 4, 6, 4, 1};
@@ -95,7 +101,7 @@ kleidicv_error_t kleidicv_blur_and_downsample_stripe_u8(
         acc = __riscv_vmacc_vx_u16m1(acc, 4, v3, vl);
         acc = __riscv_vadd_vv_u16m1(acc, v4, vl);
 
-        __riscv_vse16_v_u16m1(vbuf.data() + x, acc, vl);
+        __riscv_vse16_v_u16m1(vbuf + x, acc, vl);
         x += vl;
       }
     }
@@ -142,6 +148,7 @@ kleidicv_error_t kleidicv_blur_and_downsample_stripe_u8(
     }
   }
 
+  std::free(vbuf);
   return KLEIDICV_OK;
 }
 

@@ -200,6 +200,8 @@ if(KLEIDICV_IS_RISCV)
       ${KLEIDICV_CXX_FLAGS}
       "-march=rv64gcv"
       "-DKLEIDICV_TARGET_NEON=1"
+      "-fno-builtin-malloc"
+      "-fno-builtin-free"
     )
   endif()
 

@@ -155,7 +155,9 @@ kleidicv_error_t f32_to_u8(const float *src, size_t src_stride, uint8_t *dst,
     uint8_t *d = reinterpret_cast<uint8_t *>(
         reinterpret_cast<uint8_t *>(dst) + y * dst_stride);
     for (size_t x = 0; x < width; ++x) {
-      float f = std::nearbyint(s[x]);
+      float f = s[x];
+      if (std::isnan(f)) { d[x] = 0; continue; }
+      f = std::nearbyint(f);
       if (f > 255.0f) f = 255.0f;
       if (f < 0.0f) f = 0.0f;
       d[x] = static_cast<uint8_t>(f);
@@ -176,7 +178,9 @@ kleidicv_error_t f32_to_s8(const float *src, size_t src_stride, int8_t *dst,
     int8_t *d = reinterpret_cast<int8_t *>(
         reinterpret_cast<uint8_t *>(dst) + y * dst_stride);
     for (size_t x = 0; x < width; ++x) {
-      float f = std::nearbyint(s[x]);
+      float f = s[x];
+      if (std::isnan(f)) { d[x] = 0; continue; }
+      f = std::nearbyint(f);
       if (f > 127.0f) f = 127.0f;
       if (f < -128.0f) f = -128.0f;
       d[x] = static_cast<int8_t>(f);

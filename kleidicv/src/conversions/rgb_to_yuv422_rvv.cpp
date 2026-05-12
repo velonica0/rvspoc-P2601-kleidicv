@@ -10,9 +10,7 @@
 #include "kleidicv/kleidicv.h"
 #include "kleidicv/utils.h"
 
-#ifdef __riscv_vector
 #include "kleidicv/rvv.h"
-#endif
 
 namespace kleidicv::neon {
 

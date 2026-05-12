@@ -8,9 +8,7 @@
 #include "kleidicv/conversions/rgb_to_yuv.h"
 #include "kleidicv/kleidicv.h"
 
-#ifdef __riscv_vector
 #include "kleidicv/rvv.h"
-#endif
 
 #include "yuv42x_coefficients.h"
 

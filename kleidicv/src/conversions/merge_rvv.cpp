@@ -350,6 +350,7 @@ static kleidicv_error_t merge_typed(const void **srcs, const size_t *src_strides
                                     size_t width, size_t height,
                                     size_t channels) {
   if (channels < 2) return KLEIDICV_ERROR_RANGE;
+  if (channels > 4) return KLEIDICV_ERROR_NOT_IMPLEMENTED;
 
   CHECK_POINTERS(srcs, src_strides);
   MAKE_POINTER_CHECK_ALIGNMENT(const ScalarType, src0, srcs[0]);
@@ -415,6 +416,7 @@ static kleidicv_error_t merge_scalar(const void **srcs,
                                      size_t dst_stride, size_t width,
                                      size_t height, size_t channels) {
   if (channels < 2) return KLEIDICV_ERROR_RANGE;
+  if (channels > 4) return KLEIDICV_ERROR_NOT_IMPLEMENTED;
 
   CHECK_POINTERS(srcs, src_strides);
   MAKE_POINTER_CHECK_ALIGNMENT(const ScalarType, src0, srcs[0]);

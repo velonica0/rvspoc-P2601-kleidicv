@@ -107,7 +107,24 @@ All RVV code is VLEN-agnostic (uses `vsetvl` every iteration). The same binary w
 
 **Target:** Spacemit X100, rv64gcv, VLEN=256, GCC 15.2
 
-**Result:** 930 / 930 tests passed (100%)
+**Result:** 4543 total tests, 4526 passed, 0 failed, 17 skipped (long-running), 0 crashed
+
+Both RVV and scalar builds produce identical test results (4526/0/17/0).
+
+The 17 skipped tests are intentionally long-running (Exp.AllValues exhaustive float scan + MedianBlur large ranges). They pass when enabled with `--long-running-tests`.
+
+## Measured Speedup (RVV library vs Scalar library, 1920x1080)
+
+Both builds use the same API and test infrastructure. The only difference is `-march=rv64gcv` (RVV intrinsics compiled) vs `-march=rv64gc` (scalar `#else` fallback compiled).
+
+| Operation | Scalar (ms) | RVV (ms) | Speedup |
+|-----------|------------|---------|---------|
+| saturating_add_u8 | 3.085 | 0.473 | 6.5x |
+| saturating_sub_u8 | 2.847 | 0.448 | 6.4x |
+| min_max_u8 | 3.838 | 0.148 | 25.9x |
+| gray_to_rgb_u8 | 2.849 | 0.421 | 6.8x |
+
+min_max achieves 25.9x because the RVV path uses vector reduction (`vredminu`/`vredmaxu`) which processes 32 elements per cycle (VLEN=256, u8), while the scalar path has a data-dependent branch per element.
 
 ```
 # Reproduce:

@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <climits>
 #include <cmath>
 
+#include "kleidicv/kleidicv.h"
 #include "kleidicv/rvv.h"
 #include "kleidicv/transform/warp_perspective.h"
 
@@ -61,22 +63,36 @@ kleidicv_error_t warp_perspective_stripe(
       float yt = (T_[3] * dx + T_[4] * dy + T_[5]) * iw;
 
       if (interpolation == KLEIDICV_INTERPOLATION_NEAREST) {
-        int ix = static_cast<int>(std::round(xt));
-        int iy = static_cast<int>(std::round(yt));
+        // Clamp to [INT_MIN, INT_MAX] (via double) to avoid UB on inf/NaN.
+        // Any out-of-bounds coordinate hits the border path in get_pixel.
+        double rx = std::round(static_cast<double>(xt));
+        double ry = std::round(static_cast<double>(yt));
+        int ix = static_cast<int>(std::max(static_cast<double>(INT_MIN),
+                                           std::min(rx, static_cast<double>(INT_MAX))));
+        int iy = static_cast<int>(std::max(static_cast<double>(INT_MIN),
+                                           std::min(ry, static_cast<double>(INT_MAX))));
         dst_row[x] = get_pixel(ix, iy);
       } else {
-        int ix = static_cast<int>(std::floor(xt));
-        int iy = static_cast<int>(std::floor(yt));
-        float xfrac = xt - static_cast<float>(ix);
-        float yfrac = yt - static_cast<float>(iy);
-        float a = static_cast<float>(get_pixel(ix, iy));
-        float b = static_cast<float>(get_pixel(ix + 1, iy));
-        float c = static_cast<float>(get_pixel(ix, iy + 1));
-        float d = static_cast<float>(get_pixel(ix + 1, iy + 1));
-        float val = a * (1 - xfrac) * (1 - yfrac) +
-                    b * xfrac * (1 - yfrac) + c * (1 - xfrac) * yfrac +
-                    d * xfrac * yfrac;
-        dst_row[x] = static_cast<T>(std::clamp(val + 0.5f, 0.0f, 255.0f));
+        // Clamp to [INT_MIN, INT_MAX] (via double) to avoid UB on inf/NaN.
+        double xt_d = static_cast<double>(xt);
+        double yt_d = static_cast<double>(yt);
+        double xt_floor = std::floor(xt_d);
+        double yt_floor = std::floor(yt_d);
+        int ix = static_cast<int>(std::max(static_cast<double>(INT_MIN),
+                                           std::min(xt_floor, static_cast<double>(INT_MAX))));
+        int iy = static_cast<int>(std::max(static_cast<double>(INT_MIN),
+                                           std::min(yt_floor, static_cast<double>(INT_MAX))));
+        double xfrac = xt_d - xt_floor;
+        double yfrac = yt_d - yt_floor;
+        double a = static_cast<double>(get_pixel(ix, iy));
+        double b = static_cast<double>(get_pixel(ix + 1, iy));
+        double c = static_cast<double>(get_pixel(ix, iy + 1));
+        double d = static_cast<double>(get_pixel(ix + 1, iy + 1));
+        // Match the reference: line-by-line bilinear in double, then lround.
+        double line1 = (b - a) * xfrac + a;
+        double line2 = (d - c) * xfrac + c;
+        double val = (line2 - line1) * yfrac + line1;
+        dst_row[x] = static_cast<T>(std::lround(val));
       }
     }
   }

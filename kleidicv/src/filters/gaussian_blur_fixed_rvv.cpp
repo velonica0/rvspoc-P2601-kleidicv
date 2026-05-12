@@ -34,13 +34,14 @@ static inline ptrdiff_t border_idx(ptrdiff_t idx, ptrdiff_t size,
       return (idx < 0) ? 0 : size - 1;
 
     case FixedBorderType::REFLECT:
-      // abc|cba  (no border duplication, OpenCV REFLECT_101 style)
+      // Neon convention: REFLECT = OpenCV BORDER_REFLECT (edge pixel repeated)
+      // Pattern: dcba|abcde|edcba  => idx -1 -> 0, -2 -> 1, ...
       if (size == 1) return 0;
       {
-        ptrdiff_t period = 2 * (size - 1);
-        ptrdiff_t p = idx < 0 ? -idx : idx;
+        ptrdiff_t period = 2 * size;
+        ptrdiff_t p = idx < 0 ? -(idx + 1) : idx;
         p %= period;
-        return (p < size) ? p : period - p;
+        return (p < size) ? p : period - 1 - p;
       }
 
     case FixedBorderType::WRAP:
@@ -50,13 +51,14 @@ static inline ptrdiff_t border_idx(ptrdiff_t idx, ptrdiff_t size,
       }
 
     case FixedBorderType::REVERSE:
-      // abc|dcba  (border duplicated, OpenCV REFLECT style)
+      // Neon convention: REVERSE = OpenCV BORDER_REFLECT_101 (edge pixel NOT repeated)
+      // Pattern: dcb|abcde|dcb  => idx -1 -> 1, -2 -> 2, ...
       if (size == 1) return 0;
       {
-        ptrdiff_t period = 2 * size;
-        ptrdiff_t p = idx < 0 ? -(idx + 1) : idx;
+        ptrdiff_t period = 2 * (size - 1);
+        ptrdiff_t p = idx < 0 ? -idx : idx;
         p %= period;
-        return (p < size) ? p : period - 1 - p;
+        return (p < size) ? p : period - p;
       }
 
     default:
@@ -112,17 +114,15 @@ static const BinomialKernel *get_binomial_kernel(size_t kernel_size) {
 // Perform a binomial Gaussian blur using separable integer convolution.
 // The vertical pass convolves each column into a uint16_t temp buffer, then
 // the horizontal pass convolves horizontally and rounds to uint8_t.
+// The caller provides the pre-allocated tmp buffer (uint16_t, row_elems entries).
 static void gaussian_blur_binomial(
     const uint8_t *src, size_t src_stride, uint8_t *dst, size_t dst_stride,
     size_t width, size_t height, size_t y_begin, size_t y_end, size_t channels,
-    const BinomialKernel &bk, FixedBorderType border_type) {
+    const BinomialKernel &bk, FixedBorderType border_type, uint16_t *tmp) {
   const ptrdiff_t half = static_cast<ptrdiff_t>(bk.size / 2);
   const ptrdiff_t w = static_cast<ptrdiff_t>(width);
   const ptrdiff_t h = static_cast<ptrdiff_t>(height);
   const size_t row_elems = width * channels;
-
-  // Temporary row buffer for vertical pass output (uint16_t).
-  std::vector<uint16_t> tmp(row_elems);
 
   for (size_t y = y_begin; y < y_end; ++y) {
     // --- Vertical pass ---
@@ -142,7 +142,7 @@ static void gaussian_blur_binomial(
           vuint16m1_t v16 = __riscv_vzext_vf2_u16m1(v8, vl);
           acc = __riscv_vmacc_vx_u16m1(acc, bk.weights[ky + half], v16, vl);
         }
-        __riscv_vse16_v_u16m1(tmp.data() + x, acc, vl);
+        __riscv_vse16_v_u16m1(tmp + x, acc, vl);
         x += vl;
       }
     }
@@ -184,10 +184,12 @@ static void gaussian_blur_binomial(
 // coefficients, then applies two-pass fixed-point separable convolution
 // matching the neon scalar path.
 
+// The caller provides the pre-allocated tmp buffer (uint8_t, row_elems entries).
 static void gaussian_blur_half_kernel(
     const uint8_t *src, size_t src_stride, uint8_t *dst, size_t dst_stride,
     size_t width, size_t height, size_t y_begin, size_t y_end, size_t channels,
-    size_t kernel_size, float sigma, FixedBorderType border_type) {
+    size_t kernel_size, float sigma, FixedBorderType border_type,
+    uint8_t *tmp) {
   const size_t half_kernel_size = get_half_kernel_size(kernel_size);
   const ptrdiff_t w = static_cast<ptrdiff_t>(width);
   const ptrdiff_t h = static_cast<ptrdiff_t>(height);
@@ -206,12 +208,9 @@ static void gaussian_blur_half_kernel(
     return;
   }
 
-  // Temporary row buffer for vertical pass output (uint8_t).
-  // Each pass independently applies rounding_shift_right by 8.
   // half_kern layout: index 0 is the outermost weight, index
   // half_kernel_size-1 is the center weight.  The convolution pairs
   // symmetric positions and multiplies by half_kern[i].
-  std::vector<uint8_t> tmp(row_elems);
 
   for (size_t y = y_begin; y < y_end; ++y) {
     // --- Vertical pass (produces uint8_t via rounding shift right by 8) ---
@@ -261,7 +260,7 @@ static void gaussian_blur_half_kernel(
         // Rounding shift right by 8: (acc + 128) >> 8, then narrow to u8.
         vuint16m2_t rounded = __riscv_vadd_vx_u16m2(acc, 128, vl);
         vuint8m1_t result = __riscv_vnsrl_wx_u8m1(rounded, 8, vl);
-        __riscv_vse8_v_u8m1(tmp.data() + x, result, vl);
+        __riscv_vse8_v_u8m1(tmp + x, result, vl);
         x += vl;
       }
     }
@@ -337,21 +336,36 @@ kleidicv_error_t gaussian_blur_fixed_stripe_u8(
     return result;
   }
 
+  const size_t row_elems = width * channels;
+
   if (sigma_x == 0.0f) {
     // Binomial kernel (sigma==0 means use binomial approximation).
     const BinomialKernel *bk = get_binomial_kernel(kernel_width);
     if (bk) {
+      // Allocate the tmp buffer for the binomial vertical pass (uint16_t).
+      uint16_t *tmp = static_cast<uint16_t *>(
+          std::malloc(row_elems * sizeof(uint16_t)));
+      if (!tmp) {
+        return KLEIDICV_ERROR_ALLOCATION;
+      }
       gaussian_blur_binomial(src, src_stride, dst, dst_stride, width, height,
                              y_begin, y_end, channels, *bk,
-                             fixed_border_type);
+                             fixed_border_type, tmp);
+      std::free(tmp);
       return KLEIDICV_OK;
     }
     // Fall through to half-kernel path for sizes > 9 (15, 21).
   }
 
+  // Allocate the tmp buffer for the half-kernel vertical pass (uint8_t).
+  uint8_t *tmp = static_cast<uint8_t *>(std::malloc(row_elems));
+  if (!tmp) {
+    return KLEIDICV_ERROR_ALLOCATION;
+  }
   gaussian_blur_half_kernel(src, src_stride, dst, dst_stride, width, height,
                             y_begin, y_end, channels, kernel_width, sigma_x,
-                            fixed_border_type);
+                            fixed_border_type, tmp);
+  std::free(tmp);
   return KLEIDICV_OK;
 }
 

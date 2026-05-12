@@ -71,3 +71,15 @@ The `rvv.h` wrappers (`rvv_sadd`, `rvv_min`, etc.) handle this via overloading, 
 ## G16: Morphology must use std::malloc, not operator new
 
 **Pitfall:** The KleidiCV test framework injects allocation failures via `MockMallocToFail` which wraps `std::malloc`. Using `new (std::nothrow)` or `std::unique_ptr<T[]>(new ...)` bypasses this mock because `operator new` is a separate allocation path. The Neon morphology uses `MorphologyWorkspace` (which calls `malloc`), so the RVV version must do the same to pass the CannotAllocateImage test.
+
+## G17: GCC 15 -O2 eliminates malloc+free — must use -fno-builtin-malloc
+
+**Pitfall:** GCC 15 with `-O2` treats `malloc`/`free` as compiler builtins and eliminates sequences like `p = malloc(N); if (!p) return; free(p);` because it proves the allocation is a dead store with no side effects. This means `--wrap,malloc` (used by the test framework's `MockMallocToFail`) never fires, and allocation failure tests pass when they should fail. The fix is to compile with `-fno-builtin-malloc -fno-builtin-free` so GCC emits actual function calls that the linker can intercept.
+
+## G18: Stripe function bounds and error code ordering
+
+**Pitfall:** Tests verify specific error codes for specific invalid inputs. The Neon version's error code ordering follows from its implementation structure (workspace allocation after pointer/size checks). RVV implementations that add custom stride validation checks must place them AFTER the allocation check to match the expected error code ordering. Example: if a stride check returns `NOT_IMPLEMENTED` before the allocation check, a test expecting `ALLOCATION` for a large width will get the wrong error code.
+
+## G19: static_cast<int>(float) is UB for out-of-range values
+
+**Pitfall:** Converting a `float` to `int` via `static_cast<int>()` is undefined behavior when the float value is outside `[INT_MIN, INT_MAX]`, is `inf`, or is `NaN`. On RISC-V GCC 15 this produces arbitrary values. Remap and warp perspective must clamp float coordinates (via `double`) before the int cast.

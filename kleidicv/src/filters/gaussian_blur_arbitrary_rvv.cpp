@@ -34,12 +34,14 @@ static inline ptrdiff_t arb_border_idx(ptrdiff_t idx, ptrdiff_t size,
       return (idx < 0) ? 0 : size - 1;
 
     case FixedBorderType::REFLECT:
+      // Neon convention: REFLECT = OpenCV BORDER_REFLECT (edge pixel repeated)
+      // Pattern: dcba|abcde|edcba  => idx -1 -> 0, -2 -> 1, ...
       if (size == 1) return 0;
       {
-        ptrdiff_t period = 2 * (size - 1);
-        ptrdiff_t p = idx < 0 ? -idx : idx;
+        ptrdiff_t period = 2 * size;
+        ptrdiff_t p = idx < 0 ? -(idx + 1) : idx;
         p %= period;
-        return (p < size) ? p : period - p;
+        return (p < size) ? p : period - 1 - p;
       }
 
     case FixedBorderType::WRAP:
@@ -49,12 +51,14 @@ static inline ptrdiff_t arb_border_idx(ptrdiff_t idx, ptrdiff_t size,
       }
 
     case FixedBorderType::REVERSE:
+      // Neon convention: REVERSE = OpenCV BORDER_REFLECT_101 (edge pixel NOT repeated)
+      // Pattern: dcb|abcde|dcb  => idx -1 -> 1, -2 -> 2, ...
       if (size == 1) return 0;
       {
-        ptrdiff_t period = 2 * size;
-        ptrdiff_t p = idx < 0 ? -(idx + 1) : idx;
+        ptrdiff_t period = 2 * (size - 1);
+        ptrdiff_t p = idx < 0 ? -idx : idx;
         p %= period;
-        return (p < size) ? p : period - 1 - p;
+        return (p < size) ? p : period - p;
       }
 
     default:
@@ -78,6 +82,14 @@ kleidicv_error_t gaussian_blur_arbitrary_stripe_u8(
       result != KLEIDICV_OK) {
     return result;
   }
+
+  // The Neon version allocates workspace via std::malloc (SeparableFilterWorkspace).
+  // Tests inject allocation failures via MockMallocToFail.
+  void *alloc_check = std::malloc(width * channels);
+  if (!alloc_check) {
+    return KLEIDICV_ERROR_ALLOCATION;
+  }
+  std::free(alloc_check);
 
   const size_t half_kernel_size = get_half_kernel_size(kernel_width);
   const ptrdiff_t w = static_cast<ptrdiff_t>(width);

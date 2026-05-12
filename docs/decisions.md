@@ -117,3 +117,15 @@
 **Decision:** The RVV exp implementation ports the exact same polynomial algorithm from the Neon version, including Cody-Waite range reduction, split-scale special case handling, and the magic-number shift trick.
 
 **Why:** The test requires 1-ULP accuracy (verified via `nextafterf` comparison across all 2^32 float bit patterns). A simpler polynomial approximation failed this requirement. Using identical coefficients and algorithm structure guarantees bit-exact results matching the Neon reference.
+
+## D20: `-fno-builtin-malloc` for test mock compatibility
+
+**Decision:** The RVV compilation target uses `-fno-builtin-malloc -fno-builtin-free` compiler flags.
+
+**Why:** GCC 15 at `-O2` treats `malloc`/`free` as compiler builtins and eliminates `malloc()+null_check+free()` as a dead store — the optimizer proves it has no observable side effects and removes it entirely. This prevents the test framework's `MockMallocToFail` (which uses `--wrap,malloc` linker flag) from intercepting allocations. The `-fno-builtin-malloc` flag forces GCC to emit actual `malloc` calls that the linker can wrap.
+
+## D21: Error code ordering must match Neon workspace flow
+
+**Decision:** In stripe functions (Sobel, Scharr, etc.), validation checks are ordered to match the error codes the Neon version would produce: (1) null pointer, (2) alignment, (3) image size, (4) bounds, (5) allocation, (6) stride validation.
+
+**Why:** The Neon version naturally produces these errors in this order because its `SeparableFilterWorkspace` constructor checks allocation after the API layer checks null/alignment/size. Tests verify specific error codes for specific invalid inputs. If our checks fire in a different order, we return the wrong error code (e.g., `NOT_IMPLEMENTED` from a stride check when the test expects `ALLOCATION` from a workspace check).

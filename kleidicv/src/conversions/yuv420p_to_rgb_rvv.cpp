@@ -108,6 +108,23 @@ kleidicv_error_t yuv420p_to_rgb_stripe_u8(
     const uint8_t *src, size_t src_stride, uint8_t *dst, size_t dst_stride,
     size_t width, size_t height, kleidicv_color_conversion_t color_format,
     size_t begin, size_t end) {
+  // Check color_format validity BEFORE image-size checks, matching the Neon
+  // implementation order.  This ensures invalid formats are rejected with
+  // NOT_IMPLEMENTED even when the image dimensions would also fail range checks.
+  switch (color_format) {
+    case KLEIDICV_YV12_TO_BGR:
+    case KLEIDICV_YV12_TO_RGB:
+    case KLEIDICV_YV12_TO_BGRA:
+    case KLEIDICV_YV12_TO_RGBA:
+    case KLEIDICV_IYUV_TO_BGR:
+    case KLEIDICV_IYUV_TO_RGB:
+    case KLEIDICV_IYUV_TO_BGRA:
+    case KLEIDICV_IYUV_TO_RGBA:
+      break;
+    default:
+      return KLEIDICV_ERROR_NOT_IMPLEMENTED;
+  }
+
   CHECK_POINTER_AND_STRIDE(src, src_stride, (height * 3 + 1) / 2);
   CHECK_POINTER_AND_STRIDE(dst, dst_stride, height);
   CHECK_IMAGE_SIZE(width, height);

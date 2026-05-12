@@ -107,3 +107,15 @@ This differs from ARM Neon where `vqaddq` is overloaded for both signed and unsi
 ## F24: Spacemit X100 has VLEN=256
 
 **Finding:** The target RISC-V board (Spacemit X100) has VLEN=256 bits (32 bytes per vector register). This was confirmed by running `vsetvl_e8m1(65536)` which returns 32. The test framework reports "Vector length is set to 16 bytes" which is a Neon-centric default, not the actual hardware VLEN.
+
+## F25: GCC 15 -O2 eliminates malloc+free as dead store
+
+**Finding:** GCC 15 with `-O2` recognizes `malloc`/`free` as builtins and applies Dead Store Elimination to sequences like `void *p = malloc(N); if (!p) return ERR; free(p);`. The compiler proves the allocation has no observable side effect and removes the entire sequence. This is invisible in normal code but breaks the test framework's `MockMallocToFail` mechanism, which uses `--wrap,malloc` to intercept allocation calls. Fix: compile with `-fno-builtin-malloc -fno-builtin-free` to force GCC to emit actual function calls.
+
+## F26: Remap float-to-int cast is undefined behavior for out-of-range values
+
+**Finding:** The remap implementation converts float map coordinates to integer pixel positions via `static_cast<int>(float_val)`. When the float value is `inf`, `NaN`, or outside `[INT_MIN, INT_MAX]`, this cast is undefined behavior in C++. On RISC-V GCC 15, this produces unpredictable values causing incorrect pixel lookups. Fix: clamp via `double` to `[INT_MIN, INT_MAX]` before casting, or use `std::lround` with bounds checking.
+
+## F27: Generic resize coefficient rounding must match Neon fixed-point
+
+**Finding:** The Neon generic resize (`resize_linear_generic_neon.cpp`) uses a specific fixed-point coordinate computation: `aligned_scale` with 16-bit fractional precision, center-aligned origin, and 1/512 rounding bias. The interpolation uses `(a<<8 + (b-a)*frac + 128) >> 8` pattern (matching Neon's `vraddhn_u16`). A scalar implementation using floating-point arithmetic produces different rounding at certain pixel positions, causing 1-3 value differences in ~0.001% of pixels. Fix: replicate the exact fixed-point formula.
