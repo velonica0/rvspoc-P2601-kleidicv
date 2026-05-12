@@ -17,8 +17,16 @@
 #endif  // __cplusplus
 
 // This is defined in arm_neon.h or arm_sve.h, but we need it before including
-// those.
+// those. On RISC-V, use _Float16 if available, otherwise provide a stub.
+#if defined(__riscv)
+#if defined(__riscv_zfh) || defined(__riscv_zvfh)
+typedef _Float16 float16_t;
+#else
+typedef uint16_t float16_t;
+#endif
+#else
 typedef __fp16 float16_t;
+#endif
 
 #include "kleidicv/config.h"
 

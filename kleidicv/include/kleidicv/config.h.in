@@ -31,9 +31,16 @@
 
 #cmakedefine01 KLEIDICV_NEON_USE_CONTINUOUS_MULTIVEC_LS
 
+#cmakedefine01 KLEIDICV_ENABLE_RVV
+
 // Set to '1' if compiling NEON code paths, otherwise it is set to '0'.
 #ifndef KLEIDICV_TARGET_NEON
 #define KLEIDICV_TARGET_NEON 0
+#endif
+
+// Set to '1' if compiling RVV code paths, otherwise it is set to '0'.
+#ifndef KLEIDICV_TARGET_RVV
+#define KLEIDICV_TARGET_RVV 0
 #endif
 
 // Set to '1' if compiling SVE2 code paths, otherwise it is set to '0'.

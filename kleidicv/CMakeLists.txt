@@ -6,6 +6,21 @@ cmake_minimum_required(VERSION 3.16)
 
 project("KleidiCV")
 
+# Detect RISC-V architecture
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "riscv32")
+  set(KLEIDICV_IS_RISCV TRUE)
+else()
+  set(KLEIDICV_IS_RISCV FALSE)
+endif()
+
+# RVV (RISC-V Vector) backend - enabled by default on RISC-V Linux
+if(KLEIDICV_IS_RISCV AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(KLEIDICV_ENABLE_RVV_DEFAULT ON)
+else()
+  set(KLEIDICV_ENABLE_RVV_DEFAULT OFF)
+endif()
+option(KLEIDICV_ENABLE_RVV "Enable RISC-V Vector (RVV) code paths" ${KLEIDICV_ENABLE_RVV_DEFAULT})
+
 # Choose the default value for the KLEIDICV_ENABLE_SVE2 option
 # according to the compiler version and the system. The list of compiler
 # versions recognised as supporting SVE2 may be extended in future.
@@ -13,7 +28,9 @@ project("KleidiCV")
 # supports +sve2 since this may succeed for compilers that have only
 # partial SVE2 support.
 # SVE2 backend is only turned ON by default for Linux and Android.
-if (((CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND
+# Disabled on RISC-V since ARM extensions are not available.
+if (NOT KLEIDICV_IS_RISCV AND
+    ((CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND
       CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12) OR
      (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
       CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 10))
@@ -68,7 +85,7 @@ option(KLEIDICV_CANNY_ALGORITHM_CONFORM_OPENCV "Internal - If turned ON Canny al
 
 # Continuous load and store NEON instructions can produce suboptimal code generation on GCC,
 # and these instructions are not supported on GCC version <=8.
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT KLEIDICV_IS_RISCV)
   option(KLEIDICV_NEON_USE_CONTINUOUS_MULTIVEC_LS "Controls whether to use continous multivector load/store instructions for Neon." ON)
 else()
   option(KLEIDICV_NEON_USE_CONTINUOUS_MULTIVEC_LS "Controls whether to use continous multivector load/store instructions for Neon." OFF)
@@ -109,6 +126,11 @@ file(GLOB KLEIDICV_SME2_SOURCES
   "${CMAKE_CURRENT_LIST_DIR}/src/**/*_sme2.cpp"
 )
 
+file(GLOB KLEIDICV_RVV_SOURCES
+  "${CMAKE_CURRENT_LIST_DIR}/src/*_rvv.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/src/**/*_rvv.cpp"
+)
+
 set(KLEIDICV_INCLUDE_DIRS
   "${CMAKE_CURRENT_LIST_DIR}/include"
   "${CMAKE_CURRENT_BINARY_DIR}/include"
@@ -135,8 +157,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES ".*Clang")
     "-inline-threshold=10000"
   )
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  if(NOT KLEIDICV_IS_RISCV)
+    list(APPEND KLEIDICV_CXX_FLAGS
+      "-flax-vector-conversions"
+    )
+  endif()
   list(APPEND KLEIDICV_CXX_FLAGS
-    "-flax-vector-conversions"
     "-Wno-unused-label"
   )
   # Some warnings are too sensitive in older GCC versions
@@ -163,78 +189,103 @@ else()
   list(APPEND KLEIDICV_CXX_FLAGS "-O2" "-g0" "-fomit-frame-pointer")
 endif()
 
-add_library(kleidicv_neon OBJECT ${KLEIDICV_NEON_SOURCES})
-target_include_directories(kleidicv_neon PRIVATE ${KLEIDICV_INCLUDE_DIRS})
-set_target_properties(kleidicv_neon PROPERTIES CXX_STANDARD 17)
-target_compile_options(kleidicv_neon PRIVATE
-  ${KLEIDICV_CXX_FLAGS}
-  "-march=armv8-a"
-  "-DKLEIDICV_TARGET_NEON=1"
-)
-
-if(KLEIDICV_ENABLE_SVE2)
-  add_library(kleidicv_sve2 OBJECT ${KLEIDICV_SVE2_SOURCES})
-  target_include_directories(kleidicv_sve2 PRIVATE ${KLEIDICV_INCLUDE_DIRS})
-  set_target_properties(kleidicv_sve2 PROPERTIES CXX_STANDARD 17)
-  target_compile_options(kleidicv_sve2 PRIVATE
-    ${KLEIDICV_CXX_FLAGS}
-    "-march=armv8-a+sve2"
-    "-DKLEIDICV_TARGET_SVE2=1"
-  )
-endif()
-
-if(KLEIDICV_ENABLE_SME)
-  add_library(kleidicv_sme OBJECT ${KLEIDICV_SME_SOURCES})
-  target_include_directories(kleidicv_sme PRIVATE ${KLEIDICV_INCLUDE_DIRS})
-  set_target_properties(kleidicv_sme PROPERTIES CXX_STANDARD 17)
-  target_compile_options(kleidicv_sme PRIVATE
-    ${KLEIDICV_CXX_FLAGS}
-    "-DKLEIDICV_TARGET_SME=1"
-  )
-  if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_compile_options(kleidicv_sme PRIVATE
-    "-march=armv9-a+sme+nosve"
-  )
-  else()
-     target_compile_options(kleidicv_sme PRIVATE
-      "-march=armv9-a+sme"
+# On RISC-V, build the RVV backend as the primary implementation.
+# On ARM, build the Neon backend as the primary implementation.
+if(KLEIDICV_IS_RISCV)
+  if(KLEIDICV_ENABLE_RVV)
+    add_library(kleidicv_rvv OBJECT ${KLEIDICV_RVV_SOURCES})
+    target_include_directories(kleidicv_rvv PRIVATE ${KLEIDICV_INCLUDE_DIRS})
+    set_target_properties(kleidicv_rvv PROPERTIES CXX_STANDARD 17)
+    target_compile_options(kleidicv_rvv PRIVATE
+      ${KLEIDICV_CXX_FLAGS}
+      "-march=rv64gcv"
+      "-DKLEIDICV_TARGET_NEON=1"
     )
   endif()
-endif()
 
-if(KLEIDICV_ENABLE_SME2)
-  add_library(kleidicv_sme2 OBJECT ${KLEIDICV_SME2_SOURCES})
-  target_include_directories(kleidicv_sme2 PRIVATE ${KLEIDICV_INCLUDE_DIRS})
-  set_target_properties(kleidicv_sme2 PROPERTIES CXX_STANDARD 17)
-  target_compile_options(kleidicv_sme2 PRIVATE
-    ${KLEIDICV_CXX_FLAGS}
-    "-DKLEIDICV_TARGET_SME2=1"
-  )
-  if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_compile_options(kleidicv_sme2 PRIVATE
-    "-march=armv9-a+sme2+nosve"
-  )
-  else()
-    target_compile_options(kleidicv_sme2 PRIVATE
-    "-march=armv9-a+sme2"
-  )
+  add_library(kleidicv STATIC ${KLEIDICV_API_SOURCES})
+  target_include_directories(kleidicv PRIVATE ${KLEIDICV_INCLUDE_DIRS})
+  set_target_properties(kleidicv PROPERTIES CXX_STANDARD 17)
+  target_compile_options(kleidicv PRIVATE ${KLEIDICV_CXX_FLAGS})
+
+  if(KLEIDICV_ENABLE_RVV)
+    target_link_libraries(kleidicv PRIVATE kleidicv_rvv)
   endif()
-endif()
+else()
+  # ARM path (original)
+  add_library(kleidicv_neon OBJECT ${KLEIDICV_NEON_SOURCES})
+  target_include_directories(kleidicv_neon PRIVATE ${KLEIDICV_INCLUDE_DIRS})
+  set_target_properties(kleidicv_neon PROPERTIES CXX_STANDARD 17)
+  target_compile_options(kleidicv_neon PRIVATE
+    ${KLEIDICV_CXX_FLAGS}
+    "-march=armv8-a"
+    "-DKLEIDICV_TARGET_NEON=1"
+  )
 
-add_library(kleidicv STATIC ${KLEIDICV_API_SOURCES})
-target_include_directories(kleidicv PRIVATE ${KLEIDICV_INCLUDE_DIRS})
-set_target_properties(kleidicv PROPERTIES CXX_STANDARD 17)
-target_compile_options(kleidicv PRIVATE ${KLEIDICV_CXX_FLAGS})
-target_link_libraries(kleidicv PRIVATE kleidicv_neon)
+  if(KLEIDICV_ENABLE_SVE2)
+    add_library(kleidicv_sve2 OBJECT ${KLEIDICV_SVE2_SOURCES})
+    target_include_directories(kleidicv_sve2 PRIVATE ${KLEIDICV_INCLUDE_DIRS})
+    set_target_properties(kleidicv_sve2 PROPERTIES CXX_STANDARD 17)
+    target_compile_options(kleidicv_sve2 PRIVATE
+      ${KLEIDICV_CXX_FLAGS}
+      "-march=armv8-a+sve2"
+      "-DKLEIDICV_TARGET_SVE2=1"
+    )
+  endif()
 
-if(KLEIDICV_ENABLE_SVE2)
-  target_link_libraries(kleidicv PRIVATE kleidicv_sve2)
-endif()
+  if(KLEIDICV_ENABLE_SME)
+    add_library(kleidicv_sme OBJECT ${KLEIDICV_SME_SOURCES})
+    target_include_directories(kleidicv_sme PRIVATE ${KLEIDICV_INCLUDE_DIRS})
+    set_target_properties(kleidicv_sme PROPERTIES CXX_STANDARD 17)
+    target_compile_options(kleidicv_sme PRIVATE
+      ${KLEIDICV_CXX_FLAGS}
+      "-DKLEIDICV_TARGET_SME=1"
+    )
+    if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+      target_compile_options(kleidicv_sme PRIVATE
+      "-march=armv9-a+sme+nosve"
+    )
+    else()
+       target_compile_options(kleidicv_sme PRIVATE
+        "-march=armv9-a+sme"
+      )
+    endif()
+  endif()
 
-if(KLEIDICV_ENABLE_SME)
-  target_link_libraries(kleidicv PRIVATE kleidicv_sme)
-endif()
+  if(KLEIDICV_ENABLE_SME2)
+    add_library(kleidicv_sme2 OBJECT ${KLEIDICV_SME2_SOURCES})
+    target_include_directories(kleidicv_sme2 PRIVATE ${KLEIDICV_INCLUDE_DIRS})
+    set_target_properties(kleidicv_sme2 PROPERTIES CXX_STANDARD 17)
+    target_compile_options(kleidicv_sme2 PRIVATE
+      ${KLEIDICV_CXX_FLAGS}
+      "-DKLEIDICV_TARGET_SME2=1"
+    )
+    if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+      target_compile_options(kleidicv_sme2 PRIVATE
+      "-march=armv9-a+sme2+nosve"
+    )
+    else()
+      target_compile_options(kleidicv_sme2 PRIVATE
+      "-march=armv9-a+sme2"
+    )
+    endif()
+  endif()
 
-if(KLEIDICV_ENABLE_SME2)
-  target_link_libraries(kleidicv PRIVATE kleidicv_sme2)
+  add_library(kleidicv STATIC ${KLEIDICV_API_SOURCES})
+  target_include_directories(kleidicv PRIVATE ${KLEIDICV_INCLUDE_DIRS})
+  set_target_properties(kleidicv PROPERTIES CXX_STANDARD 17)
+  target_compile_options(kleidicv PRIVATE ${KLEIDICV_CXX_FLAGS})
+  target_link_libraries(kleidicv PRIVATE kleidicv_neon)
+
+  if(KLEIDICV_ENABLE_SVE2)
+    target_link_libraries(kleidicv PRIVATE kleidicv_sve2)
+  endif()
+
+  if(KLEIDICV_ENABLE_SME)
+    target_link_libraries(kleidicv PRIVATE kleidicv_sme)
+  endif()
+
+  if(KLEIDICV_ENABLE_SME2)
+    target_link_libraries(kleidicv PRIVATE kleidicv_sme2)
+  endif()
 endif()

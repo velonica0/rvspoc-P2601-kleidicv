@@ -57,20 +57,32 @@ FetchContent_MakeAvailable(googletest)
 
 add_subdirectory(api)
 add_subdirectory(framework)
-add_subdirectory(unit_neon)
+
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "riscv")
+  add_subdirectory(unit_neon)
+endif()
+
+set(KLEIDICV_TEST_TARGETS kleidicv-framework-test kleidicv-api-test)
+set(KLEIDICV_TEST_COMMANDS
+  COMMAND kleidicv-framework-test
+  COMMAND kleidicv-api-test
+)
+
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "riscv")
+  list(APPEND KLEIDICV_TEST_TARGETS kleidicv-neon-unit-test)
+  list(APPEND KLEIDICV_TEST_COMMANDS COMMAND kleidicv-neon-unit-test)
+endif()
 
 # Target to build all tests.
 add_custom_target(
   kleidicv-test
-  DEPENDS kleidicv-framework-test kleidicv-api-test kleidicv-neon-unit-test
+  DEPENDS ${KLEIDICV_TEST_TARGETS}
 )
 
 # Target to build and run all tests.
 add_custom_target(
   check-kleidicv
-  COMMAND kleidicv-framework-test
-  COMMAND kleidicv-api-test
-  COMMAND kleidicv-neon-unit-test
+  ${KLEIDICV_TEST_COMMANDS}
   DEPENDS kleidicv-test
   USES_TERMINAL
 )
