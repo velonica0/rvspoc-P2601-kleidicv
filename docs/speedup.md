@@ -1,136 +1,153 @@
 # Speedup: RVV vs Scalar
 
-Target: Spacemit X100 (rv64gcv, VLEN=256, 8 cores)
+Target: Spacemit X100 (rv64gcv, VLEN=256, 8 cores), GCC 15.2, `-O2`
 
-## Vector Width by Element Type
+Both builds use the same source code (`_rvv.cpp` files). The RVV build compiles with `-march=rv64gcv` (activating `#ifdef __riscv_vector` path). The scalar build compiles with `-march=rv64gc` (activating `#else` scalar fallback path). Same API, same tests, same binary — only the compiled code path differs.
 
-| VLEN | Elements per vector (8-bit) | Elements per vector (16-bit) | Elements per vector (32-bit) | Elements per vector (64-bit) |
-|------|----------------------------|------------------------------|------------------------------|------------------------------|
-| 128  | 16                         | 8                            | 4                            | 2                            |
-| 256  | 32                         | 16                           | 8                            | 4                            |
-| 512  | 64                         | 32                           | 16                           | 8                            |
+## Measured Results (1920x1080, 100 iterations)
 
-All RVV code is VLEN-agnostic (uses `vsetvl` every iteration). The same binary works on VLEN=128, 256, and 512.
+### Arithmetic
 
-## Vectorized Operators (36 / 49)
+| Operation | Scalar (ms) | RVV (ms) | Speedup |
+|-----------|------------|---------|---------|
+| saturating_add_u8 | 3.090 | 0.633 | 4.9x |
+| saturating_add_s8 | 4.688 | 0.629 | 7.5x |
+| saturating_add_u16 | 3.518 | 1.212 | 2.9x |
+| saturating_add_s16 | 4.186 | 1.242 | 3.4x |
+| saturating_add_u32 | 3.443 | 2.331 | 1.5x |
+| saturating_add_s32 | 5.026 | 2.399 | 2.1x |
+| saturating_add_s64 | 5.520 | 5.147 | 1.1x |
+| saturating_sub_u8 | 3.794 | 0.628 | 6.0x |
+| saturating_absdiff_u8 | 3.431 | 0.637 | 5.4x |
+| saturating_absdiff_s8 | 3.657 | 0.648 | 5.6x |
+| saturating_absdiff_s32 | 3.805 | 2.578 | 1.5x |
+| bitwise_and_u8 | 2.844 | 0.627 | 4.5x |
+| compare_equal_u8 | 2.847 | 0.638 | 4.5x |
+| compare_greater_u8 | 2.847 | 0.638 | 4.5x |
+| threshold_binary_u8 | 2.840 | 0.391 | 7.3x |
+| in_range_u8 | 2.884 | 0.419 | 6.9x |
+| scale_u8 | 1.902 | 1.903 | 1.0x |
+| multiply_u8 | 4.944 | 0.567 | 8.7x |
+| multiply_s16 | 5.546 | 1.169 | 4.7x |
+| add_abs_thresh_s16 | 7.602 | 1.659 | 4.6x |
+| exp_f32 | 52.881 | 6.511 | 8.1x |
 
-### Arithmetic Operations (11 — all fully vectorized)
+### Conversions
 
-| Operation | Types | RVV Technique | Expected Speedup |
-|-----------|-------|---------------|-----------------|
-| saturating_add | s8/u8/s16/u16/s32/u32/s64/u64 | vsadd/vsaddu | 4-32x |
-| saturating_sub | s8/u8/s16/u16/s32/u32/s64/u64 | vssub/vssubu | 4-32x |
-| saturating_absdiff | u8/s8/u16/s16/s32 | max-min (unsigned), i64 widening (signed i32) | 4-16x |
-| bitwise_and | u8 | vand | ~32x |
-| compare (equal/greater) | u8 | vmseq/vmsgtu + vmerge | ~32x |
-| threshold_binary | u8 | compare + merge | ~32x |
-| in_range | u8/s8 | compare + and | ~32x |
-| scale | u8 | widening multiply + narrow | ~16x |
-| multiply | u8/s8/u16/s16 | widening multiply + saturating narrow | ~8-16x |
-| add_abs_with_threshold | u8 | absdiff + compare + merge | ~16x |
-| exp | float | Remez polynomial, Cody-Waite reduction, FMA | ~8x |
+| Operation | Scalar (ms) | RVV (ms) | Speedup |
+|-----------|------------|---------|---------|
+| gray_to_rgb_u8 | 2.855 | 0.454 | 6.3x |
+| gray_to_rgba_u8 | 3.866 | 0.562 | 6.9x |
+| rgb_to_bgr_u8 | 2.992 | 0.833 | 3.6x |
+| rgba_to_bgra_u8 | 3.984 | 1.126 | 3.5x |
+| f32_to_u8 | 9.839 | 1.386 | 7.1x |
+| f32_to_s8 | 9.947 | 1.419 | 7.0x |
+| u8_to_f32 | 1.909 | 0.605 | 3.2x |
+| s8_to_f32 | 1.909 | 0.607 | 3.1x |
+| split_3ch_u8 | 17.674 | 0.844 | 20.9x |
+| merge_3ch_u8 | 18.855 | 0.984 | 19.2x |
 
-### Conversion Operations (9 — all fully vectorized)
+### YUV Conversions
 
-| Operation | RVV Technique | Expected Speedup |
-|-----------|---------------|-----------------|
-| gray_to_rgb / gray_to_rgba | segment store (vsseg3/4e8) | ~10x |
-| rgb_to_rgb (channel swap) | segment load + segment store | ~16x |
-| float_conv (u8/s8 <-> f32) | widen/narrow chain + vfcvt + NaN masking | ~8x |
-| split (2/3/4ch) | segment load (vlseg2/3/4e8) | ~16x |
-| merge (2/3/4ch) | segment store (vsseg2/3/4e8) | ~16x |
-| YUV444 to RGB | i32m4 arithmetic + vlseg3/vsseg3 | ~8x |
-| RGB to YUV444 | i32m4 arithmetic + vlseg3/vsseg3 | ~8x |
-| YUV420sp to RGB | i32m4 + vrgatherei16 UV duplication | ~6x |
-| YUV422 to RGB | vlseg4 + strided segment store | ~4-6x |
+| Operation | Scalar (ms) | RVV (ms) | Speedup |
+|-----------|------------|---------|---------|
+| yuv444_to_rgb | 14.178 | 4.908 | 2.9x |
+| rgb_to_yuv444 | 10.328 | 5.141 | 2.0x |
+| yuv420sp_to_rgb (NV12) | 18.180 | 4.474 | 4.1x |
+| yuv422_to_rgb (YUYV) | 18.765 | 4.920 | 3.8x |
+| yuv420p_to_rgb (IYUV) | 18.691 | 18.076 | 1.0x |
 
-### Analysis Operations (4 — all fully vectorized)
+### Analysis
 
-| Operation | RVV Technique | Expected Speedup |
-|-----------|---------------|-----------------|
-| sum (float) | vfadd + vfredusum | ~8x |
-| count_nonzeros (u8) | vmseq + vcpop | ~32x |
-| min_max (s8/u8/s16/u16/s32/float) | vmin/vmax + vredmin/vredmax | ~16-32x |
-| min_max_loc (u8) | two-phase: reduce + vfirst search | ~8-16x |
+| Operation | Scalar (ms) | RVV (ms) | Speedup |
+|-----------|------------|---------|---------|
+| min_max_u8 | 3.850 | 0.245 | 15.7x |
+| min_max_s16 | 3.792 | 0.492 | 7.7x |
+| min_max_s32 | 3.792 | 1.006 | 3.8x |
+| min_max_f32 | 5.683 | 1.133 | 5.0x |
+| min_max_loc_u8 | 3.784 | 0.245 | 15.4x |
+| sum_f32 | 2.847 | 3.327 | 0.9x |
+| count_nonzeros_u8 | 1.895 | 0.447 | 4.2x |
 
-### Filter Operations (8 — partially or fully vectorized)
+### Filters
 
-| Operation | RVV Scope | Expected Speedup |
-|-----------|-----------|-----------------|
-| gaussian_blur_fixed (3-21) | vertical pass | ~2-4x |
-| gaussian_blur_arbitrary | vertical pass | ~2-4x |
-| blur_and_downsample | vertical pass | ~2-3x |
-| separable_filter_2d | vertical pass | ~2-3x |
-| sobel_3x3 (horiz/vert) | interior pixels (scalar borders) | ~8-16x |
-| scharr_interleaved | full output + segment store | ~8-16x |
-| median_blur_small_hist | histogram bulk add/subtract | ~2x |
-| median_blur_large_hist | histogram bulk add/subtract | ~2x |
+| Operation | Scalar (ms) | RVV (ms) | Speedup |
+|-----------|------------|---------|---------|
+| gaussian_blur_3x3 | 42.970 | 23.540 | 1.8x |
+| gaussian_blur_5x5 | 63.136 | 31.119 | 2.0x |
+| gaussian_blur_7x7 | 82.927 | 39.080 | 2.1x |
+| sobel_horiz_u8 | 8.551 | 1.606 | 5.3x |
+| sobel_vert_u8 | 8.515 | 1.601 | 5.3x |
+| scharr_u8 | 12.568 | 2.426 | 5.2x |
 
-### Morphology (1 — vectorized via workspace)
+### Morphology
 
-| Operation | RVV Scope | Expected Speedup |
-|-----------|-----------|-----------------|
-| dilate/erode (u8) | horizontal + vertical ops | ~4-8x |
+| Operation | Scalar (ms) | RVV (ms) | Speedup |
+|-----------|------------|---------|---------|
+| dilate_3x3_u8 | 27.175 | 1.082 | 25.1x |
+| erode_3x3_u8 | 28.010 | 1.078 | 26.0x |
 
-### Transform Operations (2 — partially vectorized)
+### Resize
 
-| Operation | RVV Technique | Expected Speedup |
-|-----------|---------------|-----------------|
-| transpose | strided store (vsse8/16/32), single-ch only | ~2-4x |
-| rotate (90 CW) | strided store, single-ch only | ~2-4x |
+| Operation | Scalar (ms) | RVV (ms) | Speedup |
+|-----------|------------|---------|---------|
+| resize_linear_2x2_u8 | 11.052 | 11.081 | 1.0x |
 
-### Resize (1)
+### Transform
 
-| Operation | RVV Technique | Expected Speedup |
-|-----------|---------------|-----------------|
-| resize_to_quarter | strided load (vlse8, stride=2) + widen-add | ~8-16x |
+| Operation | Scalar (ms) | RVV (ms) | Speedup |
+|-----------|------------|---------|---------|
+| transpose_u8 | 5.935 | 5.740 | 1.0x |
+| rotate_90cw_u8 | 5.953 | 5.743 | 1.0x |
 
-## Scalar-Only Operators (13 / 49)
+## Summary
 
-| Operation | Reason |
-|-----------|--------|
-| remap_f32 | Gather-heavy coordinate remapping |
-| remap_s16 | Gather-heavy coordinate remapping |
-| remap_s16point5 | Gather-heavy coordinate remapping |
-| warp_perspective | Per-pixel perspective coordinate computation |
-| standalone_lucas_kanade_alg | Complex iterative optical flow |
-| canny | Multi-stage pipeline (gradient + NMS + hysteresis) |
-| YUV420p to RGB | Asymmetric chroma stride management |
-| RGB to YUV420p | 2x2 chroma downsampling writes |
-| RGB to YUV420sp | 2x2 chroma downsampling writes |
-| RGB to YUV422 | Pixel-pair chroma averaging + packed output |
-| median_blur_sorting_network | Comparator network topology |
-| resize_linear | Coefficient table lookups |
-| resize_linear_generic | Dynamic coefficient generation |
+| Speedup Range | Operators |
+|--------------|-----------|
+| 15-26x | min_max_u8, min_max_loc_u8, split_3ch, merge_3ch, dilate, erode |
+| 5-9x | add_s8, sub_u8, absdiff, threshold, in_range, multiply, exp, gray_to_rgb/rgba, f32_to_u8/s8, sobel, scharr |
+| 2-5x | add_u16/s16, compare, count_nonzeros, yuv444, yuv420sp, yuv422, gaussian_blur, min_max_s16/f32, rgb_to_bgr, u8_to_f32 |
+| ~1x (no speedup) | scale_u8, add_u32/s64, yuv420p (scalar-only), resize_linear, transpose, rotate, sum_f32 |
+
+**Geometric mean speedup across all RVV-vectorized operators: ~4.5x**
+
+Notable observations:
+- **split/merge** achieve 20x because the scalar path has poor cache behavior (column-by-column access), while RVV uses segment load/store which deinterleaves in hardware.
+- **dilate/erode** achieve 25x because the scalar path iterates per-pixel with nested kernel loops, while RVV loads entire rows and applies element-wise min/max.
+- **scale_u8** shows no speedup because the scalar path is already optimized by GCC's auto-vectorizer.
+- **sum_f32** is slightly slower with RVV due to the `vfredusum` ordered reduction being serial, while the scalar loop benefits from GCC's aggressive FP optimization.
+- **transpose/rotate** are memory-bound (strided stores) and see no measurable improvement.
+
+## Reproduction
+
+```bash
+ssh openkylin@192.168.5.211
+cd /home/openkylin/github/rvspoc-P2601-kleidicv
+bash scripts/run_bench.sh
+```
+
+Or manually:
+```bash
+# RVV
+c++ -O2 -std=c++17 -Wno-unused-result \
+    -Ikleidicv/include -Ibuild/kleidicv/include \
+    -o /tmp/bench_rvv scripts/bench.cpp -Lbuild/kleidicv -lkleidicv
+/tmp/bench_rvv
+
+# Scalar
+c++ -O2 -std=c++17 -march=rv64gc -Wno-unused-result \
+    -Ikleidicv/include -Ibuild_scalar/kleidicv/include \
+    -o /tmp/bench_scalar scripts/bench.cpp -Lbuild_scalar/kleidicv -lkleidicv
+/tmp/bench_scalar
+```
 
 ## On-Device Test Results
 
 **Target:** Spacemit X100, rv64gcv, VLEN=256, GCC 15.2
 
-**Result:** 4543 total tests, 4526 passed, 0 failed, 17 skipped (long-running), 0 crashed
+| Build | Total | Passed | Failed | Skipped | Crashed |
+|-------|-------|--------|--------|---------|---------|
+| RVV (rv64gcv) | 4543 | 4526 | 0 | 17 | 0 |
+| Scalar (rv64gc) | 4543 | 4526 | 0 | 17 | 0 |
 
-Both RVV and scalar builds produce identical test results (4526/0/17/0).
-
-The 17 skipped tests are intentionally long-running (Exp.AllValues exhaustive float scan + MedianBlur large ranges). They pass when enabled with `--long-running-tests`.
-
-## Measured Speedup (RVV library vs Scalar library, 1920x1080)
-
-Both builds use the same API and test infrastructure. The only difference is `-march=rv64gcv` (RVV intrinsics compiled) vs `-march=rv64gc` (scalar `#else` fallback compiled).
-
-| Operation | Scalar (ms) | RVV (ms) | Speedup |
-|-----------|------------|---------|---------|
-| saturating_add_u8 | 3.085 | 0.473 | 6.5x |
-| saturating_sub_u8 | 2.847 | 0.448 | 6.4x |
-| min_max_u8 | 3.838 | 0.148 | 25.9x |
-| gray_to_rgb_u8 | 2.849 | 0.421 | 6.8x |
-
-min_max achieves 25.9x because the RVV path uses vector reduction (`vredminu`/`vredmaxu`) which processes 32 elements per cycle (VLEN=256, u8), while the scalar path has a data-dependent branch per element.
-
-```
-# Reproduce:
-ssh openkylin@192.168.5.211
-cd /home/openkylin/github/rvspoc-P2601-kleidicv/build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make kleidicv-api-test -j8
-./test/api/kleidicv-api-test --long-running-tests
-```
+Both builds produce identical test results. The 17 skipped tests are intentionally long-running (pass with `--long-running-tests`).
